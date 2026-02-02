@@ -1,0 +1,66 @@
+"""
+Trixfer base on MI-FGSM
+"""
+import torch
+import torch.nn as nn
+from adaptation.attacks.Trixfer_Base import Trixfer_Base
+
+
+class Trixfer_MIFGSM(Trixfer_Base):
+    def __init__(self, eps=8/255, alpha=2/255, iters=20, max_value=1., min_value=0., threshold=0., beta=10,
+                 device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu'), momentum=0.9,
+                 fine_model=None, coarse_model=None, 
+                 lambda_fine=1.0, lambda_coarse=1.0, lambda_sim=1.0,
+                 model_name=None,layer_level=0.33):
+        super().__init__(eps=eps, alpha=alpha, max_value=max_value, min_value=min_value,
+                         threshold=threshold, device=device, beta=beta,
+                         fine_model=fine_model, coarse_model=coarse_model,
+                         lambda_fine=lambda_fine, lambda_coarse=lambda_coarse, lambda_sim=lambda_sim,
+                         model_name=model_name,layer_level=layer_level)
+        self.iters = iters
+        self.momentum = momentum
+
+    def attack(self, data, fine_label, coarse_label=None):
+        """
+        Attack with hybrid loss
+        """
+        B, C, H, W = data.size()
+        data = data.clone().detach().to(self.device)
+        
+        fine_label = fine_label.clone().detach().to(self.device)
+        
+        # Get coarse labels if not provided
+        if coarse_label is None:
+            pass
+        else:
+            coarse_label = coarse_label.clone().detach().to(self.device)
+        
+        # init pert
+        adv_data = data.clone().detach() + 0.001 * torch.randn(data.shape, device=self.device)
+        adv_data = adv_data.detach()
+
+        grad_mom = torch.zeros_like(data, device=self.device)
+
+        for i in range(self.iters):
+            adv_data.requires_grad = True
+            # Use hybrid loss
+            
+            total_loss, fine_loss, coarse_loss, sim_loss = self.compute_hybrid_loss(
+                ori_data=data, 
+                adv_data=adv_data, 
+                fine_labels=fine_label, 
+                coarse_labels=coarse_label
+            )
+            grad = torch.autograd.grad(total_loss, adv_data, retain_graph=False)[0]
+        
+
+            # Momentum (MI-FGSM)
+            grad = grad / torch.mean(torch.abs(grad), dim=(1, 2, 3), keepdim=True)
+            grad = grad + self.momentum * grad_mom
+            grad_mom = grad
+
+            # add perturbation
+            adv_data = self.get_adv_example(ori_data=data, adv_data=adv_data, grad=grad)
+            adv_data.detach_()
+
+        return adv_data
